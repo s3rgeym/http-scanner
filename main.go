@@ -15,7 +15,6 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -49,7 +48,6 @@ func main() {
 	inputFile := flag.String("i", "", "Input file with URLs")
 	outputFile := flag.String("o", "", "Output file for JSON results")
 	logLevel := flag.String("l", "warning", "Log level (error, warning, info, debug)")
-	path := flag.String("p", "", "Path for bash expansion")
 	regex := flag.String("r", "", "Regex to check response body")
 	notRegex := flag.String("nr", "", "Regex that body should not match")
 	contentLengthFilter := flag.String("cl", "", "Filter for content length (e.g. '100', '100-200', '<100', '<=100', '>100', '>=100')")
@@ -66,7 +64,21 @@ func main() {
 	maxRetries := flag.Int("retries", 1, "Number of retry attempts")
 	rps := flag.Int("rps", 50, "Number of requests per second")
 	proxyURL := flag.String("proxy", "", "Proxy URL (e.g., http://example.com:8080 or socks5://localhost:1080)")
+
+	flag.Usage = func() {
+		fmt.Fprintf(flag.CommandLine.Output(), "Usage:\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "  %s [flags] path [ path ... ]\n\n", os.Args[0])
+		fmt.Fprintf(flag.CommandLine.Output(), "Flags:\n")
+		flag.PrintDefaults()
+	}
+
 	flag.Parse()
+
+	paths := flag.Args()
+
+	if len(paths) == 0 {
+		flag.Usage()
+	}
 
 	log.SetOutput(colorable.NewColorableStderr())
 	log.SetFormatter(&logrus.TextFormatter{
@@ -82,7 +94,6 @@ func main() {
 		log.Fatalf("Error reading URLs: %v", err)
 	}
 
-	paths := expandBraces(*path)
 	//log.Debugf("Expanded path: %v", paths)
 
 	allowedStatuses, err := parseStatusCodes(*statusCodes)
@@ -289,50 +300,6 @@ func setLogLevel(logLevel string) {
 	default:
 		log.SetLevel(logrus.WarnLevel)
 	}
-}
-
-// https://algo.monster/liteproblems/1096
-// expandBraces takes a brace expression and returns all possible expansions.
-func expandBraces(expression string) []string {
-	// Set to store the expanded results
-	expandedSet := map[string]bool{}
-
-	// Helper function to recursively perform DFS on the expression
-	var dfs func(string)
-	dfs = func(exp string) {
-		// Find the first closing brace
-		closingBraceIndex := strings.Index(exp, "}")
-		if closingBraceIndex == -1 {
-			// If no closing brace is found, add the expression to the set
-			expandedSet[exp] = true
-			return
-		}
-
-		// Find the last opening brace before the first closing brace
-		openingBraceIndex := strings.LastIndex(exp[:closingBraceIndex], "{")
-
-		// Divide the expression into three parts: before, inside, and after the braces
-		beforeBrace := exp[:openingBraceIndex]
-		afterBrace := exp[closingBraceIndex+1:]
-		insideBraces := exp[openingBraceIndex+1 : closingBraceIndex]
-
-		// Split the inside of the braces by commas and recurse
-		options := strings.Split(insideBraces, ",")
-		for _, option := range options {
-			dfs(beforeBrace + option + afterBrace)
-		}
-	}
-
-	// Start the recursive DFS
-	dfs(expression)
-
-	// Collect the results and sort them
-	result := make([]string, 0, len(expandedSet))
-	for exp := range expandedSet {
-		result = append(result, exp)
-	}
-	sort.Strings(result)
-	return result
 }
 
 func parseMimeType(contentType string) string {
