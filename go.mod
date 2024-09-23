@@ -1,4 +1,4 @@
-module http-scanner
+module github.com/s3rgeym/http-scanner
 
 go 1.23.1
 
