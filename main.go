@@ -54,7 +54,7 @@ func main() {
 	contentType := flag.String("ct", "", "Expected content type (main type and subtype only)")
 	notContentType := flag.String("nct", "", "Content type that body should not match")
 	statusCodes := flag.String("sc", "200", "Filter for status codes (e.g. '200', '200-299,400,401,403,404', '200-599')")
-	workers := flag.Int("w", 20, "Number of parallel workers")
+	workers := flag.Int("w", 10, "Number of parallel workers")
 	followRedirects := flag.Bool("F", false, "Follow redirects")
 	forceHTTPS := flag.Bool("https", false, "Force HTTPS")
 	timeout := flag.Duration("t", 15*time.Second, "HTTP request timeout")
@@ -64,6 +64,7 @@ func main() {
 	maxRetries := flag.Int("retries", 1, "Number of retry attempts")
 	rps := flag.Int("rps", 50, "Number of requests per second")
 	proxyURL := flag.String("proxy", "", "Proxy URL (e.g., http://example.com:8080 or socks5://localhost:1080)")
+	maxHostErrors := flag.Int("mhe", 10, "Maximum number of errors per host before ignoring further requests")
 
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), "Usage:\n")
@@ -110,11 +111,18 @@ func main() {
 	writer := createWriter(*outputFile)
 	defer writer.Flush()
 
+	// Add rate limiter
+	limiter := rate.NewLimiter(rate.Limit(*rps), *rps)
+
 	// Configure HTTP client with proxy if specified
-	client := configureHTTPClient(*proxyURL, *timeout, *maxRetries, *followRedirects, *rps)
+	client := configureHTTPClient(*proxyURL, *timeout, *maxRetries, *followRedirects, limiter)
 
 	var wg sync.WaitGroup
 	semaphore := make(chan struct{}, *workers)
+
+	// Host error counters
+	hostErrors := make(map[string]int)
+	var hostErrorsMutex sync.Mutex
 
 	log.Info("Scanning started!")
 
@@ -127,12 +135,27 @@ func main() {
 					<-semaphore
 					wg.Done()
 				}()
-				fullURL, err := urlJoin(ensureScheme(url, *forceHTTPS), path)
+
+				normalizedUrl := ensureScheme(url, *forceHTTPS)
+				host := getHostWithoutPort(normalizedUrl)
+
+				hostErrorsMutex.Lock()
+				if hostErrors[host] >= *maxHostErrors {
+					hostErrorsMutex.Unlock()
+					log.Warnf("Host %s has exceeded the maximum number of errors, skipping further requests", host)
+					return
+				}
+				hostErrorsMutex.Unlock()
+
+				fullURL, err := urlJoin(normalizedUrl, path)
+
 				if err != nil {
 					log.Errorf("Error: %v", err)
 					return
 				}
+
 				log.Debugf("Probing URL: %s", fullURL)
+
 				req, err := retryablehttp.NewRequest("GET", fullURL, nil)
 				if err != nil {
 					log.Errorf("Error creating request for URL %s: %v", fullURL, err)
@@ -148,6 +171,12 @@ func main() {
 				resp, err := client.Do(req)
 				if err != nil {
 					log.Warnf("Error probing URL %s: %v", fullURL, err)
+
+					// Increment host error counter
+					hostErrorsMutex.Lock()
+					hostErrors[host]++
+					hostErrorsMutex.Unlock()
+
 					return
 				}
 				defer resp.Body.Close()
@@ -386,13 +415,17 @@ func urlJoin(baseURL, relativePath string) (string, error) {
 func saveFile(initialBody []byte, resp *http.Response, saveDirectory string) {
 	u := resp.Request.URL
 
-	host := u.Hostname()
+	host, _, err := net.SplitHostPort(u.Host)
+	if err != nil {
+		host = u.Host
+	}
+
 	path := u.Path
 
 	savePath := filepath.Join(saveDirectory, host, path)
 	savePath = strings.TrimSuffix(savePath, "/")
 
-	err := os.MkdirAll(filepath.Dir(savePath), 0755)
+	err = os.MkdirAll(filepath.Dir(savePath), 0755)
 	if err != nil {
 		log.Errorf("Error creating directory %s: %v", filepath.Dir(savePath), err)
 		return
@@ -472,7 +505,7 @@ func isStatusAllowed(status int, ranges [][2]int) bool {
 	return false
 }
 
-func configureHTTPClient(proxyURL string, timeout time.Duration, maxRetries int, followRedirects bool, rps int) *retryablehttp.Client {
+func configureHTTPClient(proxyURL string, timeout time.Duration, maxRetries int, followRedirects bool, limiter *rate.Limiter) *retryablehttp.Client {
 	client := retryablehttp.NewClient()
 	client.RetryMax = maxRetries
 	client.HTTPClient = &http.Client{
@@ -497,8 +530,6 @@ func configureHTTPClient(proxyURL string, timeout time.Duration, maxRetries int,
 		client.HTTPClient.Transport.(*http.Transport).Proxy = http.ProxyURL(proxy)
 	}
 
-	// Add rate limiter
-	limiter := rate.NewLimiter(rate.Limit(rps), rps)
 	client.RequestLogHook = func(logger retryablehttp.Logger, req *http.Request, retry int) {
 		limiter.Wait(req.Context())
 	}
@@ -635,4 +666,16 @@ func parseContentLengthFilter(filter string) (func(int64) bool, error) {
 	}
 
 	return nil, fmt.Errorf("invalid content length filter: %s", filter)
+}
+
+func getHostWithoutPort(urlString string) string {
+	u, err := url.Parse(urlString)
+	if err != nil {
+		return ""
+	}
+	host, _, err := net.SplitHostPort(u.Host)
+	if err != nil {
+		return u.Host
+	}
+	return host
 }
