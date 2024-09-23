@@ -20,10 +20,10 @@ jobs:
             GOOS: windows
             GOARCH: amd64
             ext: ".exe"
-          - os: macos-latest
-            GOOS: darwin
-            GOARCH: amd64
-            ext: ""
+          # - os: macos-latest
+          #   GOOS: darwin
+          #   GOARCH: amd64
+          #   ext: ""
 
     steps:
       - name: Checkout code
@@ -37,13 +37,13 @@ jobs:
       - name: Build binary
         run: |
           mkdir -p dist
-          CGO_ENABLED=0 GOOS=${{ matrix.GOOS }} GOARCH=${{ matrix.GOARCH }} go build -o dist/myapp-${{ matrix.GOOS }}-${{ matrix.GOARCH }}${{ matrix.ext }}
+          CGO_ENABLED=0 GOOS=${{ matrix.GOOS }} GOARCH=${{ matrix.GOARCH }} go build -o dist/${{ github.event.repository.name }}-${{ matrix.GOOS }}-${{ matrix.GOARCH }}${{ matrix.ext }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v3
         with:
-          name: myapp-${{ matrix.GOOS }}-${{ matrix.GOARCH }}
-          path: dist/myapp-${{ matrix.GOOS }}-${{ matrix.GOARCH }}${{ matrix.ext }}
+          name: ${{ github.event.repository.name }}-${{ matrix.GOOS }}-${{ matrix.GOARCH }}
+          path: dist/${{ github.event.repository.name }}-${{ matrix.GOOS }}-${{ matrix.GOARCH }}${{ matrix.ext }}
 
   release:
     needs: build
