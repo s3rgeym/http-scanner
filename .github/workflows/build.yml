@@ -34,10 +34,14 @@ jobs:
         with:
           go-version: "1.21.x"
 
+      # Я не хочу, чтобы репозиторий палился в бинарнике
+      - name: Modify go.mod
+        run: sed -i 's/module .*/module anonymous/' go.mod
+
       - name: Build binary
         run: |
           mkdir -p dist
-          CGO_ENABLED=0 GOOS=${{ matrix.GOOS }} GOARCH=${{ matrix.GOARCH }} go build -ldflags="-w -s -buildid= -X main.moduleName=vanished" -trimpath -o dist/${{ github.event.repository.name }}-${{ matrix.GOOS }}-${{ matrix.GOARCH }}${{ matrix.ext }}
+          CGO_ENABLED=0 GOOS=${{ matrix.GOOS }} GOARCH=${{ matrix.GOARCH }} go build -ldflags="-w -s -buildid=" -trimpath -o dist/${{ github.event.repository.name }}-${{ matrix.GOOS }}-${{ matrix.GOARCH }}${{ matrix.ext }}
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
