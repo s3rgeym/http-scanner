@@ -21,12 +21,13 @@ import (
 	"sync"
 	"time"
 
-	// go mod init <project-name>
-	// go get <dependecy>
-	// go mod edit -droprequire=<dependency>
-	// go mod tidy
+	// Запусти `go mod tidy` чтобы установить все зависимости
+
+	"github.com/hashicorp/go-retryablehttp"
 	"github.com/mattn/go-colorable"
 	"github.com/sirupsen/logrus"
+	"github.com/yeka/zip"
+	"golang.org/x/time/rate"
 )
 
 type Result struct {
@@ -51,6 +52,7 @@ func main() {
 	path := flag.String("p", "", "Path for bash expansion")
 	regex := flag.String("r", "", "Regex to check response body")
 	notRegex := flag.String("nr", "", "Regex that body should not match")
+	contentLengthFilter := flag.String("cl", "", "Filter for content length (e.g. '100', '100-200', '<100', '<=100', '>100', '>=100')")
 	contentType := flag.String("ct", "", "Expected content type (main type and subtype only)")
 	notContentType := flag.String("nct", "", "Content type that body should not match")
 	statusCodes := flag.String("sc", "200", "Filter for status codes (e.g. '200', '200-299,400,401,403,404', '200-599')")
@@ -59,6 +61,11 @@ func main() {
 	forceHTTPS := flag.Bool("https", false, "Force HTTPS")
 	timeout := flag.Duration("t", 15*time.Second, "HTTP request timeout")
 	saveDirectory := flag.String("S", "", "Save files to directory")
+	archive := flag.Bool("a", false, "Archive and delete the save directory after completion")
+	//archivePassphrase := flag.String("passphrase", "", "Passphrase for the archive")
+	maxRetries := flag.Int("retries", 1, "Number of retry attempts")
+	rps := flag.Int("rps", 50, "Number of requests per second")
+	proxyURL := flag.String("proxy", "", "Proxy URL (e.g., http://example.com:8080 or socks5://localhost:1080)")
 	flag.Parse()
 
 	log.SetOutput(colorable.NewColorableStderr())
@@ -83,26 +90,21 @@ func main() {
 		log.Fatalf("Error parsing status codes: %v", err)
 	}
 
+	contentLengthFilterFunc, err := parseContentLengthFilter(*contentLengthFilter)
+	if err != nil {
+		log.Fatalf("Error parsing content length filter: %v", err)
+	}
+
 	writer := createWriter(*outputFile)
 	defer writer.Flush()
+
+	// Configure HTTP client with proxy if specified
+	client := configureHTTPClient(*proxyURL, *timeout, *maxRetries, *followRedirects, *rps)
 
 	var wg sync.WaitGroup
 	semaphore := make(chan struct{}, *workers)
 
 	log.Info("Scanning started!")
-
-	client := &http.Client{
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if !*followRedirects {
-				return http.ErrUseLastResponse
-			}
-			return nil
-		},
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		},
-		Timeout: *timeout,
-	}
 
 	for _, url := range urls {
 		for _, path := range paths {
@@ -119,7 +121,7 @@ func main() {
 					return
 				}
 				log.Debugf("Probing URL: %s", fullURL)
-				req, err := http.NewRequest("GET", fullURL, nil)
+				req, err := retryablehttp.NewRequest("GET", fullURL, nil)
 				if err != nil {
 					log.Errorf("Error creating request for URL %s: %v", fullURL, err)
 					return
@@ -139,7 +141,12 @@ func main() {
 				defer resp.Body.Close()
 
 				if !isStatusAllowed(resp.StatusCode, allowedStatuses) {
-					log.Warnf("Status %d for URL %s is not in allowed range.", resp.StatusCode, fullURL)
+					log.Warnf("Bad status for URL %s: %d", fullURL, resp.StatusCode)
+					return
+				}
+
+				if !contentLengthFilterFunc(resp.ContentLength) {
+					log.Warnf("Content length %d for URL %s does not match the filter.", resp.ContentLength, fullURL)
 					return
 				}
 
@@ -214,6 +221,11 @@ func main() {
 	}
 
 	wg.Wait()
+
+	if *archive && *saveDirectory != "" {
+		archiveAndDelete(*saveDirectory)
+	}
+
 	log.Infof("Scanning finished!")
 }
 
@@ -490,4 +502,168 @@ func isStatusAllowed(status int, ranges [][2]int) bool {
 		}
 	}
 	return false
+}
+
+func configureHTTPClient(proxyURL string, timeout time.Duration, maxRetries int, followRedirects bool, rps int) *retryablehttp.Client {
+	client := retryablehttp.NewClient()
+	client.RetryMax = maxRetries
+	client.HTTPClient = &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if !followRedirects {
+				return http.ErrUseLastResponse
+			}
+			return nil
+		},
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			Proxy:           http.ProxyURL(nil), // Initialize with nil proxy
+		},
+		Timeout: timeout,
+	}
+
+	if proxyURL != "" {
+		proxy, err := url.Parse(proxyURL)
+		if err != nil {
+			logrus.Fatalf("Failed to parse proxy URL: %v", err)
+		}
+		client.HTTPClient.Transport.(*http.Transport).Proxy = http.ProxyURL(proxy)
+	}
+
+	// Add rate limiter
+	limiter := rate.NewLimiter(rate.Limit(rps), rps)
+	client.RequestLogHook = func(logger retryablehttp.Logger, req *http.Request, retry int) {
+		limiter.Wait(req.Context())
+	}
+
+	return client
+}
+
+// archiveAndDelete archives the specified directory using 7zip and deletes the directory after archiving.
+func archiveAndDelete(saveDirectory string) {
+	archivePath := strings.TrimRight(saveDirectory, "/") + ".zip"
+
+	// Create a new ZIP archive with the specified passphrase
+	file, err := os.Create(archivePath)
+	if err != nil {
+		log.Fatalf("Failed to create archive file: %v", err)
+	}
+	defer file.Close()
+
+	zipWriter := zip.NewWriter(file)
+	defer zipWriter.Close()
+
+	err = filepath.Walk(saveDirectory, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if info.IsDir() {
+			return nil
+		}
+
+		file, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+
+		relPath, err := filepath.Rel(saveDirectory, path)
+		if err != nil {
+			return err
+		}
+
+		zipFile, err := zipWriter.Create(relPath)
+		if err != nil {
+			return err
+		}
+
+		_, err = io.Copy(zipFile, file)
+		if err != nil {
+			return err
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		log.Fatalf("Failed to archive directory: %v", err)
+	}
+
+	err = os.RemoveAll(saveDirectory)
+	if err != nil {
+		log.Fatalf("Failed to delete directory: %v", err)
+	}
+
+	log.Infof("Directory archived and deleted: %s", archivePath)
+}
+
+func parseContentLengthFilter(filter string) (func(int64) bool, error) {
+	if filter == "" {
+		return func(int64) bool { return true }, nil
+	}
+
+	filter = strings.TrimSpace(filter)
+
+	// Check for exact match
+	if len(filter) > 0 && filter[0] != '<' && filter[0] != '>' {
+		length, err := strconv.ParseInt(filter, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid content length filter: %s", filter)
+		}
+		return func(contentLength int64) bool {
+			return contentLength == length
+		}, nil
+	}
+
+	if strings.HasPrefix(filter, "<=") {
+		value, err := strconv.ParseInt(filter[2:], 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid content length filter: %s", filter)
+		}
+		return func(contentLength int64) bool {
+			return contentLength <= value
+		}, nil
+	} else if strings.HasPrefix(filter, ">=") {
+		value, err := strconv.ParseInt(filter[2:], 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid content length filter: %s", filter)
+		}
+		return func(contentLength int64) bool {
+			return contentLength >= value
+		}, nil
+	} else if strings.HasPrefix(filter, "<") {
+		value, err := strconv.ParseInt(filter[1:], 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid content length filter: %s", filter)
+		}
+		return func(contentLength int64) bool {
+			return contentLength < value
+		}, nil
+	} else if strings.HasPrefix(filter, ">") {
+		value, err := strconv.ParseInt(filter[1:], 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid content length filter: %s", filter)
+		}
+		return func(contentLength int64) bool {
+			return contentLength > value
+		}, nil
+	} else if strings.Contains(filter, "-") {
+		parts := strings.Split(filter, "-")
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("invalid content length filter: %s", filter)
+		}
+		min, err := strconv.ParseInt(parts[0], 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid content length filter: %s", filter)
+		}
+		max, err := strconv.ParseInt(parts[1], 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid content length filter: %s", filter)
+		}
+		return func(contentLength int64) bool {
+			return contentLength >= min && contentLength <= max
+		}, nil
+	}
+
+	return nil, fmt.Errorf("invalid content length filter: %s", filter)
 }
