@@ -39,23 +39,8 @@ jobs:
           mkdir -p dist
           CGO_ENABLED=0 GOOS=${{ matrix.GOOS }} GOARCH=${{ matrix.GOARCH }} go build -o dist/${{ github.event.repository.name }}-${{ matrix.GOOS }}-${{ matrix.GOARCH }}${{ matrix.ext }}
 
-      # Не знаю зачем грузить артефакты эти
-      # - name: Upload artifact
-      #   uses: actions/upload-artifact@v4
-      #   with:
-      #     name: ${{ github.event.repository.name }}-${{ matrix.GOOS }}-${{ matrix.GOARCH }}
-      #     path: dist/${{ github.event.repository.name }}-${{ matrix.GOOS }}-${{ matrix.GOARCH }}${{ matrix.ext }}
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download binaries
-        uses: actions/download-artifact@v4
-        with:
-          path: dist
-
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           files: dist/*
         env:
