@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -52,6 +53,7 @@ func main() {
 	notRegex := flag.String("nr", "", "Regex that body should not match")
 	contentType := flag.String("ct", "", "Expected content type (main type and subtype only)")
 	notContentType := flag.String("nct", "", "Content type that body should not match")
+	statusCodes := flag.String("sc", "200", "Filter for status codes (e.g. '200', '200-299,400,401,403,404', '200-599')")
 	workers := flag.Int("w", 20, "Number of parallel workers")
 	followRedirects := flag.Bool("F", false, "Follow redirects")
 	forceHTTPS := flag.Bool("https", false, "Force HTTPS")
@@ -75,6 +77,11 @@ func main() {
 
 	paths := expandBraces(*path)
 	//log.Debugf("Expanded path: %v", paths)
+
+	allowedStatuses, err := parseStatusCodes(*statusCodes)
+	if err != nil {
+		log.Fatalf("Error parsing status codes: %v", err)
+	}
 
 	writer := createWriter(*outputFile)
 	defer writer.Flush()
@@ -118,13 +125,11 @@ func main() {
 					return
 				}
 
-				headers := getDefaultHeaders()
-
-				for key, value := range headers {
+				for key, value := range getDefaultHeaders() {
 					req.Header.Set(key, value)
 				}
 
-				log.Debugf("User-Agent for %s: %s", fullURL, headers["User-Agent"])
+				log.Debugf("User-Agent for %s: %s", fullURL, req.Header.Get("User-Agent"))
 
 				resp, err := client.Do(req)
 				if err != nil {
@@ -133,8 +138,8 @@ func main() {
 				}
 				defer resp.Body.Close()
 
-				if resp.StatusCode != 200 {
-					log.Warnf("Bad status code for URL %s: %d", fullURL, resp.StatusCode)
+				if !isStatusAllowed(resp.StatusCode, allowedStatuses) {
+					log.Warnf("Status %d for URL %s is not in allowed range.", resp.StatusCode, fullURL)
 					return
 				}
 
@@ -180,16 +185,16 @@ func main() {
 				completionDate := time.Now().Format(time.RFC3339)
 				ip := getIP(resp)
 				result := Result{
-					Input:          url,                                                                         // Входной URL
-					URL:            resp.Request.URL.String(),                                                   // Конечный URL
-					Method:         req.Method,                                                                  // Метод запроса
-					Host:           resp.Request.URL.Host,                                                       // Хост ответа
-					Path:           strings.TrimRight(resp.Request.URL.Path+"?"+resp.Request.URL.RawQuery, "?"), // Путь с query string
-					CompletionDate: completionDate,                                                              // Дата завершения запроса
-					Status:         resp.StatusCode,                                                             // Статус ответа
-					ContentType:    mimeType,                                                                    // Content-Type
-					ContentLength:  resp.ContentLength,                                                          // Длина контента
-					IP:             ip,                                                                          // IP-адрес
+					Input:          url,
+					URL:            resp.Request.URL.String(),
+					Method:         req.Method,
+					Host:           resp.Request.URL.Host,
+					Path:           resp.Request.URL.Path,
+					CompletionDate: completionDate,
+					Status:         resp.StatusCode,
+					ContentType:    mimeType,
+					ContentLength:  resp.ContentLength,
+					IP:             ip,
 				}
 
 				// Immediately output result
@@ -202,7 +207,7 @@ func main() {
 				writer.Flush()
 
 				if *saveDirectory != "" {
-					saveFile(resp, body, *saveDirectory)
+					saveFile(body, resp, *saveDirectory)
 				}
 			}(url, path)
 		}
@@ -398,7 +403,7 @@ func urlJoin(baseURL, relativePath string) (string, error) {
 	return joined.String(), nil
 }
 
-func saveFile(resp *http.Response, partialBody []byte, saveDirectory string) {
+func saveFile(initialBody []byte, resp *http.Response, saveDirectory string) {
 	u := resp.Request.URL
 
 	host := u.Hostname()
@@ -421,7 +426,7 @@ func saveFile(resp *http.Response, partialBody []byte, saveDirectory string) {
 	defer file.Close()
 
 	// Write the initial body to the file
-	_, err = file.Write(partialBody)
+	_, err = file.Write(initialBody)
 	if err != nil {
 		log.Errorf("Error writing to file %s: %v", savePath, err)
 		return
@@ -435,4 +440,54 @@ func saveFile(resp *http.Response, partialBody []byte, saveDirectory string) {
 	}
 
 	log.Infof("File saved: %s", savePath)
+}
+
+func parseStatusCodes(input string) ([][2]int, error) {
+	var ranges [][2]int
+
+	if input == "" {
+		return ranges, nil // Нет фильтра, возвращаем пустой диапазон
+	}
+
+	parts := strings.Split(input, ",")
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if strings.Contains(part, "-") {
+			bounds := strings.Split(part, "-")
+			if len(bounds) != 2 {
+				return nil, fmt.Errorf("invalid range: %s", part)
+			}
+			min, err := strconv.Atoi(bounds[0])
+			if err != nil {
+				return nil, fmt.Errorf("invalid lower bound: %s", bounds[0])
+			}
+			max, err := strconv.Atoi(bounds[1])
+			if err != nil {
+				return nil, fmt.Errorf("invalid upper bound: %s", bounds[1])
+			}
+			if min > max {
+				return nil, fmt.Errorf("lower bound greater than upper bound: %s", part)
+			}
+			ranges = append(ranges, [2]int{min, max})
+		} else {
+			value, err := strconv.Atoi(part)
+			if err != nil {
+				return nil, fmt.Errorf("invalid status code: %s", part)
+			}
+			ranges = append(ranges, [2]int{value, value})
+		}
+	}
+	return ranges, nil
+}
+
+func isStatusAllowed(status int, ranges [][2]int) bool {
+	if len(ranges) == 0 {
+		return true // Если диапазоны пустые, нет фильтрации
+	}
+	for _, r := range ranges {
+		if status >= r[0] && status <= r[1] {
+			return true
+		}
+	}
+	return false
 }

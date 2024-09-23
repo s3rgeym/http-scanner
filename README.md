@@ -20,7 +20,13 @@ go get github.com/s3rgeym/http-scanner
 ## Usage 🚀
 
 ```bash
-$ echo 'example.com' | http-scanner -p '/{archive,site,backup}.{zip,tar.{g,x}z}' -nct 'text/html' -nr '<html' -l debug -S backups
+http-scanner -h
+```
+
+Example:
+
+```bash
+$ echo 'example.com' | http-scanner -p '/{archive,site,backup}.{zip,tar.{g,x}z}' -nct 'text/html' -nr '(?i)<html' -l debug -S dumps
 INFO[2024-09-23T13:59:10+03:00] Scanning started!
 DEBU[2024-09-23T13:59:10+03:00] Probing URL: https://example.com/site.zip
 DEBU[2024-09-23T13:59:10+03:00] Probing URL: https://example.com/archive.tar.gz
@@ -42,13 +48,13 @@ DEBU[2024-09-23T13:59:10+03:00] Probing URL: https://example.com/backup.tar.xz
 DEBU[2024-09-23T13:59:10+03:00] User-Agent for https://example.com/backup.tar.xz: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36
 WARN[2024-09-23T13:59:10+03:00] URL https://example.com/site.zip body matches not-allowed regex <html
 {"input":"example.com","url":"https://example.com/backup.tar.gz","method":"GET","host":"example.com","path":"/backup.tar.gz","completion_date":"2024-09-23T13:59:10+03:00","status":200,"content_type":"application/octet-stream","content_length":1517,"ip":"12.34.56.78"}
-INFO[2024-09-23T13:59:10+03:00] File saved: backups/example.com/backup.tar.gz
-WARN[2024-09-23T13:59:10+03:00] Bad status code for URL https://example.com/site.tar.gz: 404
-WARN[2024-09-23T13:59:10+03:00] Bad status code for URL https://example.com/backup.tar.xz: 404
-WARN[2024-09-23T13:59:10+03:00] Bad status code for URL https://example.com/backup.zip: 404
-WARN[2024-09-23T13:59:11+03:00] Bad status code for URL https://example.com/archive.zip: 404
-WARN[2024-09-23T13:59:11+03:00] Bad status code for URL https://example.com/site.tar.xz: 404
-WARN[2024-09-23T13:59:11+03:00] Bad status code for URL https://example.com/archive.tar.gz: 404
-WARN[2024-09-23T13:59:11+03:00] Bad status code for URL https://example.com/archive.tar.xz: 404
+INFO[2024-09-23T13:59:10+03:00] File saved: dumps/example.com/backup.tar.gz
+WARN[2024-09-23T15:24:58+03:00] Status 404 for URL https://example.com/archive.zip is not in allowed range.
+WARN[2024-09-23T15:24:58+03:00] Status 404 for URL https://example.com/archive.tar.xz is not in allowed range.
+WARN[2024-09-23T15:24:58+03:00] Status 404 for URL https://example.com/archive.tar.gz is not in allowed range.
+WARN[2024-09-23T15:24:58+03:00] Status 404 for URL https://example.com/site.tar.gz is not in allowed range.
+WARN[2024-09-23T15:24:58+03:00] Status 404 for URL https://example.com/backup.tar.xz is not in allowed range.
+WARN[2024-09-23T15:24:58+03:00] Status 404 for URL https://example.com/site.tar.xz is not in allowed range.
+WARN[2024-09-23T15:24:58+03:00] Status 404 for URL https://example.com/backup.zip is not in allowed range.
 INFO[2024-09-23T13:59:11+03:00] Scanning finished!
 ```
