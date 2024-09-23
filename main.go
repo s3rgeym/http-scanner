@@ -117,12 +117,8 @@ func main() {
 					log.Errorf("Error creating request for URL %s: %v", fullURL, err)
 					return
 				}
-				headers := map[string]string{
-					"User-Agent":      randomChromeUserAgent(),
-					"Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
-					"Accept-Language": "en-US,en;q=0.9",
-					// Добавьте другие заголовки, если необходимо
-				}
+
+				headers := getDefaultHeaders()
 
 				for key, value := range headers {
 					req.Header.Set(key, value)
@@ -144,6 +140,7 @@ func main() {
 
 				contentTypeHeader := resp.Header.Get("Content-Type")
 				mimeType := parseMimeType(contentTypeHeader)
+
 				if *contentType != "" {
 					if *contentType != mimeType {
 						log.Warnf("URL %s returned content type %s, expected %s", fullURL, mimeType, *contentType)
@@ -158,7 +155,7 @@ func main() {
 					}
 				}
 
-				body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<22))
+				body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 				if err != nil {
 					log.Errorf("Error reading response body for URL %s: %v", fullURL, err)
 					return
@@ -183,7 +180,7 @@ func main() {
 				completionDate := time.Now().Format(time.RFC3339)
 				ip := getIP(resp)
 				result := Result{
-					Input:          fullURL,                                                                     // Входной URL
+					Input:          url,                                                                         // Входной URL
 					URL:            resp.Request.URL.String(),                                                   // Конечный URL
 					Method:         req.Method,                                                                  // Метод запроса
 					Host:           resp.Request.URL.Host,                                                       // Хост ответа
@@ -213,6 +210,14 @@ func main() {
 
 	wg.Wait()
 	log.Infof("Scanning finished!")
+}
+
+func getDefaultHeaders() map[string]string {
+	return map[string]string{
+		"Accept-Language": "en-US,en;q=0.9",
+		"Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+		"User-Agent":      randomChromeUserAgent(),
+	}
 }
 
 func readURLs(filename string) ([]string, error) {
@@ -270,44 +275,46 @@ func setLogLevel(logLevel string) {
 }
 
 // https://algo.monster/liteproblems/1096
+// expandBraces takes a brace expression and returns all possible expansions.
 func expandBraces(expression string) []string {
-	var expandedSet = make(map[string]bool)
+	// Set to store the expanded results
+	expandedSet := map[string]bool{}
 
-	var dfs func(exp string)
+	// Helper function to recursively perform DFS on the expression
+	var dfs func(string)
 	dfs = func(exp string) {
-		// Find the position of the first closing brace
+		// Find the first closing brace
 		closingBraceIndex := strings.Index(exp, "}")
-
-		// Base case: If there is no closing brace, add the entire expression to the set
 		if closingBraceIndex == -1 {
+			// If no closing brace is found, add the expression to the set
 			expandedSet[exp] = true
 			return
 		}
 
-		// Find the position of the last opening brace before the found closing brace
+		// Find the last opening brace before the first closing brace
 		openingBraceIndex := strings.LastIndex(exp[:closingBraceIndex], "{")
 
 		// Divide the expression into three parts: before, inside, and after the braces
 		beforeBrace := exp[:openingBraceIndex]
 		afterBrace := exp[closingBraceIndex+1:]
+		insideBraces := exp[openingBraceIndex+1 : closingBraceIndex]
 
-		// Split the contents of the braces by commas and recurse for each part
-		for _, insideBrace := range strings.Split(exp[openingBraceIndex+1:closingBraceIndex], ",") {
-			// Recursively call the dfs function with the new expression
-			dfs(beforeBrace + insideBrace + afterBrace)
+		// Split the inside of the braces by commas and recurse
+		options := strings.Split(insideBraces, ",")
+		for _, option := range options {
+			dfs(beforeBrace + option + afterBrace)
 		}
 	}
 
-	// Call the dfs helper function with the initial expression
+	// Start the recursive DFS
 	dfs(expression)
 
-	// Convert the set to a sorted slice
-	var result []string
-	for key := range expandedSet {
-		result = append(result, key)
+	// Collect the results and sort them
+	result := make([]string, 0, len(expandedSet))
+	for exp := range expandedSet {
+		result = append(result, exp)
 	}
 	sort.Strings(result)
-
 	return result
 }
 
@@ -341,7 +348,7 @@ func randomChromeUserAgent() string {
 	return fmt.Sprintf(
 		"Mozilla/5.0 (%s) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/%d.0.0.0 Safari/537.36",
 		platforms[rand.Int()%len(platforms)],
-		randomIntInRange(100, 128),
+		randomIntInRange(88, 128),
 	)
 }
 
