@@ -84,6 +84,19 @@ func main() {
 
 	log.Info("Scanning started!")
 
+	client := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if !*followRedirects {
+				return http.ErrUseLastResponse
+			}
+			return nil
+		},
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+		Timeout: *timeout,
+	}
+
 	for _, url := range urls {
 		for _, path := range paths {
 			wg.Add(1)
@@ -104,21 +117,19 @@ func main() {
 					log.Errorf("Error creating request for URL %s: %v", fullURL, err)
 					return
 				}
-				userAgent := randomChromeUserAgent()
-				log.Debugf("User-Agent for %s: %s", fullURL, userAgent)
-				req.Header.Set("User-Agent", userAgent)
-				client := &http.Client{
-					CheckRedirect: func(req *http.Request, via []*http.Request) error {
-						if !*followRedirects {
-							return http.ErrUseLastResponse
-						}
-						return nil
-					},
-					Transport: &http.Transport{
-						TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-					},
-					Timeout: *timeout,
+				headers := map[string]string{
+					"User-Agent":      randomChromeUserAgent(),
+					"Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
+					"Accept-Language": "en-US,en;q=0.9",
+					// Добавьте другие заголовки, если необходимо
 				}
+
+				for key, value := range headers {
+					req.Header.Set(key, value)
+				}
+
+				log.Debugf("User-Agent for %s: %s", fullURL, headers["User-Agent"])
+
 				resp, err := client.Do(req)
 				if err != nil {
 					log.Warnf("Error probing URL %s: %v", fullURL, err)
