@@ -37,7 +37,7 @@ jobs:
       - name: Build binary
         run: |
           mkdir -p dist
-          GOOS=${{ matrix.GOOS }} GOARCH=${{ matrix.GOARCH }} go build -o dist/myapp-${{ matrix.GOOS }}-${{ matrix.GOARCH }}${{ matrix.ext }}
+          CGO_ENABLED=0 GOOS=${{ matrix.GOOS }} GOARCH=${{ matrix.GOARCH }} go build -o dist/myapp-${{ matrix.GOOS }}-${{ matrix.GOARCH }}${{ matrix.ext }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v3
