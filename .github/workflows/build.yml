@@ -38,6 +38,7 @@ jobs:
       - name: Modify go.mod
         run: sed -i 's/module .*/module anonymous/' go.mod
 
+      # -trimpath и другие флаги, затирающие файловые пути, уменьшают бинарник 
       - name: Build binary
         run: |
           mkdir -p dist
