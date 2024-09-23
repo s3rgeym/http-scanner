@@ -14,7 +14,7 @@ HTTP Scanner is a command-line tool written in Go that allows you to scan HTTP U
 ## Installation 📦
 
 ```bash
-go get github.com/s3rgeym/http-scanner
+go install github.com/s3rgeym/http-scanner
 ```
 
 ## Usage 🚀
