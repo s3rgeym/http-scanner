@@ -1,15 +1,6 @@
 # HTTP Scanner 🔍
 
-HTTP Scanner is a command-line tool written in Go that allows you to scan HTTP URLs using bash-style path patterns. The tool supports brace expansion, regex filtering, and other useful features.
-
-## Features 🌟
-
-- **Path Pattern Expansion**: Supports bash-style path pattern expansion using curly braces.
-- **Regex Filtering**: Ability to filter responses using regular expressions.
-- **Parallel Scanning**: Uses multiple goroutines for parallel URL scanning.
-- **Logging Levels**: Supports various logging levels (debug, info, warning, error).
-- **JSON Output**: Ability to output scan results in JSON format.
-- **File Saving**: Optionally saves found files to a specified directory, preserving the directory structure from the server.
+HTTP Scanner is a command-line tool written in Go that allows you to search for specific paths on servers by checking their content using regular expressions. This tool is particularly useful for finding vulnerabilities, sensitive information, and other data of interest on web servers.
 
 ## Installation 📦
 
@@ -24,7 +15,7 @@ Ready-to-use builds for Linux, Mac OS, and Windows can be downloaded from the [r
 Example Usage:
 
 ```bash
-$ echo 'example.com' | http-scanner -p '/{archive,site,backup}.{zip,tar.{g,x}z}' -nct 'text/html' -nr '(?i)<html' -cl '>0' -S dumps -a -l debug
+$ echo 'example.com' | http-scanner -nct 'text/html' -nr '(?i)<html' -cl '>0' -S dumps -a -l debug /{archive,site,backup}.{zip,tar.{g,x}z}
 INFO[2024-09-23T15:31:08+03:00] Scanning started!
 DEBU[2024-09-23T15:31:08+03:00] Probing URL: https://example.com/site.zip
 DEBU[2024-09-23T15:31:08+03:00] Probing URL: https://example.com/archive.tar.gz
@@ -56,8 +47,6 @@ WARN[2024-09-23T15:31:09+03:00] Bad status for URL https://example.com/backup.ta
 WARN[2024-09-23T15:31:09+03:00] Bad status for URL https://example.com/archive.tar.xz: 404
 INFO[2024-09-23T15:31:09+03:00] Scanning finished!
 ```
-
-- `-p '/{archive,site,backup}.{zip,tar.{g,x}z}'`: Specifies the path for bash expansion, expanding to paths like `/archive.zip`, `/site.zip`, `/backup.zip`, `/archive.tar.gz`, `/site.tar.gz`, `/backup.tar.gz`, `/archive.tar.xz`, `/site.tar.xz`, `/backup.tar.xz`.
 
 - `-nct 'text/html'`: Filters out responses with the content type `text/html`, ignoring responses that have `Content-Type: text/html`.
 
