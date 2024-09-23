@@ -37,7 +37,7 @@ jobs:
       - name: Build binary
         run: |
           mkdir -p dist
-          CGO_ENABLED=0 GOOS=${{ matrix.GOOS }} GOARCH=${{ matrix.GOARCH }} go build -o dist/${{ github.event.repository.name }}-${{ matrix.GOOS }}-${{ matrix.GOARCH }}${{ matrix.ext }}
+          CGO_ENABLED=0 GOOS=${{ matrix.GOOS }} GOARCH=${{ matrix.GOARCH }} go build -ldflags="-w -s -buildid=" -trimpath -o dist/${{ github.event.repository.name }}-${{ matrix.GOOS }}-${{ matrix.GOARCH }}${{ matrix.ext }}
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
