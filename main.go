@@ -598,11 +598,11 @@ func archiveAndDelete(saveDirectory string) {
 }
 
 func parseContentLengthFilter(filter string) (func(int64) bool, error) {
+	filter = strings.TrimSpace(filter)
+
 	if filter == "" {
 		return func(int64) bool { return true }, nil
 	}
-
-	filter = strings.TrimSpace(filter)
 
 	// Check for exact match
 	if len(filter) > 0 && filter[0] != '<' && filter[0] != '>' {
@@ -615,8 +615,9 @@ func parseContentLengthFilter(filter string) (func(int64) bool, error) {
 		}, nil
 	}
 
+	// Check for range or comparison
 	if strings.HasPrefix(filter, "<=") {
-		value, err := strconv.ParseInt(filter[2:], 10, 64)
+		value, err := strconv.ParseInt(strings.TrimSpace(filter[2:]), 10, 64)
 		if err != nil {
 			return nil, fmt.Errorf("invalid content length filter: %s", filter)
 		}
@@ -624,7 +625,7 @@ func parseContentLengthFilter(filter string) (func(int64) bool, error) {
 			return contentLength <= value
 		}, nil
 	} else if strings.HasPrefix(filter, ">=") {
-		value, err := strconv.ParseInt(filter[2:], 10, 64)
+		value, err := strconv.ParseInt(strings.TrimSpace(filter[2:]), 10, 64)
 		if err != nil {
 			return nil, fmt.Errorf("invalid content length filter: %s", filter)
 		}
@@ -632,7 +633,7 @@ func parseContentLengthFilter(filter string) (func(int64) bool, error) {
 			return contentLength >= value
 		}, nil
 	} else if strings.HasPrefix(filter, "<") {
-		value, err := strconv.ParseInt(filter[1:], 10, 64)
+		value, err := strconv.ParseInt(strings.TrimSpace(filter[1:]), 10, 64)
 		if err != nil {
 			return nil, fmt.Errorf("invalid content length filter: %s", filter)
 		}
@@ -640,7 +641,7 @@ func parseContentLengthFilter(filter string) (func(int64) bool, error) {
 			return contentLength < value
 		}, nil
 	} else if strings.HasPrefix(filter, ">") {
-		value, err := strconv.ParseInt(filter[1:], 10, 64)
+		value, err := strconv.ParseInt(strings.TrimSpace(filter[1:]), 10, 64)
 		if err != nil {
 			return nil, fmt.Errorf("invalid content length filter: %s", filter)
 		}
@@ -652,11 +653,11 @@ func parseContentLengthFilter(filter string) (func(int64) bool, error) {
 		if len(parts) != 2 {
 			return nil, fmt.Errorf("invalid content length filter: %s", filter)
 		}
-		min, err := strconv.ParseInt(parts[0], 10, 64)
+		min, err := strconv.ParseInt(strings.TrimSpace(parts[0]), 10, 64)
 		if err != nil {
 			return nil, fmt.Errorf("invalid content length filter: %s", filter)
 		}
-		max, err := strconv.ParseInt(parts[1], 10, 64)
+		max, err := strconv.ParseInt(strings.TrimSpace(parts[1]), 10, 64)
 		if err != nil {
 			return nil, fmt.Errorf("invalid content length filter: %s", filter)
 		}
