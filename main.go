@@ -78,6 +78,7 @@ func main() {
 
 	if len(paths) == 0 {
 		flag.Usage()
+		os.Exit(1)
 	}
 
 	log.SetOutput(colorable.NewColorableStderr())
