@@ -29,11 +29,16 @@ import (
 )
 
 type Result struct {
-	URL           string `json:"url"`
-	Status        int    `json:"status"`
-	ContentType   string `json:"content_type"`
-	ContentLength int64  `json:"content_length"`
-	IP            string `json:"ip"`
+	Input          string `json:"input"`           // Входной URL
+	URL            string `json:"url"`             // Конечный URL (после редиректов)
+	Method         string `json:"method"`          // Метод запроса
+	Host           string `json:"host"`            // Хост
+	Path           string `json:"path"`            // Путь с query string
+	CompletionDate string `json:"completion_date"` // Дата завершения запроса
+	Status         int    `json:"status"`          // Статус ответа
+	ContentType    string `json:"content_type"`    // Content-Type ответа
+	ContentLength  int64  `json:"content_length"`  // Длина контента
+	IP             string `json:"ip"`              // IP-адрес
 }
 
 var log = logrus.New()
@@ -90,13 +95,13 @@ func main() {
 				}()
 				fullURL, err := urlJoin(ensureScheme(url, *forceHTTPS), path)
 				if err != nil {
-					log.Warnf("Error: %v", err)
+					log.Errorf("Error: %v", err)
 					return
 				}
 				log.Debugf("Probing URL: %s", fullURL)
 				req, err := http.NewRequest("GET", fullURL, nil)
 				if err != nil {
-					log.Warnf("Error creating request for URL %s: %v", fullURL, err)
+					log.Errorf("Error creating request for URL %s: %v", fullURL, err)
 					return
 				}
 				userAgent := randomChromeUserAgent()
@@ -122,37 +127,36 @@ func main() {
 				defer resp.Body.Close()
 
 				if resp.StatusCode != 200 {
-					log.Debugf("Bad status code for URL %s: %d", fullURL, resp.StatusCode)
+					log.Warnf("Bad status code for URL %s: %d", fullURL, resp.StatusCode)
 					return
 				}
 
 				contentTypeHeader := resp.Header.Get("Content-Type")
+				mimeType := parseMimeType(contentTypeHeader)
 				if *contentType != "" {
-					mimeType := parseMimeType(contentTypeHeader)
 					if *contentType != mimeType {
-						log.Debugf("URL %s returned content type %s, expected %s", fullURL, mimeType, *contentType)
+						log.Warnf("URL %s returned content type %s, expected %s", fullURL, mimeType, *contentType)
 						return
 					}
 				}
 
 				if *notContentType != "" {
-					mimeType := parseMimeType(contentTypeHeader)
 					if *notContentType == mimeType {
-						log.Debugf("URL %s returned content type %s, which should not match %s", fullURL, mimeType, *notContentType)
+						log.Warnf("URL %s returned content type %s, which should not match %s", fullURL, mimeType, *notContentType)
 						return
 					}
 				}
 
 				body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<22))
 				if err != nil {
-					log.Debugf("Error reading response body for URL %s: %v", fullURL, err)
+					log.Errorf("Error reading response body for URL %s: %v", fullURL, err)
 					return
 				}
 
 				if *regex != "" {
 					matched, err := regexp.MatchString(*regex, string(body))
 					if err != nil || !matched {
-						log.Debugf("URL %s body does not match regex %s", fullURL, *regex)
+						log.Warnf("URL %s body does not match regex %s", fullURL, *regex)
 						return
 					}
 				}
@@ -160,18 +164,24 @@ func main() {
 				if *notRegex != "" {
 					matched, err := regexp.MatchString(*notRegex, string(body))
 					if err != nil || matched {
-						log.Debugf("URL %s body matches not-allowed regex %s", fullURL, *notRegex)
+						log.Warnf("URL %s body matches not-allowed regex %s", fullURL, *notRegex)
 						return
 					}
 				}
 
+				completionDate := time.Now().Format(time.RFC3339)
 				ip := getIP(resp)
 				result := Result{
-					URL:           fullURL,
-					Status:        resp.StatusCode,
-					ContentType:   contentTypeHeader,
-					ContentLength: resp.ContentLength,
-					IP:            ip,
+					Input:          fullURL,                                                                     // Входной URL
+					URL:            resp.Request.URL.String(),                                                   // Конечный URL
+					Method:         req.Method,                                                                  // Метод запроса
+					Host:           resp.Request.URL.Host,                                                       // Хост ответа
+					Path:           strings.TrimRight(resp.Request.URL.Path+"?"+resp.Request.URL.RawQuery, "?"), // Путь с query string
+					CompletionDate: completionDate,                                                              // Дата завершения запроса
+					Status:         resp.StatusCode,                                                             // Статус ответа
+					ContentType:    mimeType,                                                                    // Content-Type
+					ContentLength:  resp.ContentLength,                                                          // Длина контента
+					IP:             ip,                                                                          // IP-адрес
 				}
 
 				// Immediately output result
