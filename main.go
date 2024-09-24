@@ -42,6 +42,11 @@ type Result struct {
 	IP             string `json:"ip"`
 }
 
+type CheckPath struct {
+	Url  string
+	Path string
+}
+
 var log = logrus.New()
 
 func main() {
@@ -115,129 +120,134 @@ func main() {
 	client := configureHTTPClient(*proxyURL, *timeout, *maxRetries, *followRedirects, limiter)
 
 	var wg sync.WaitGroup
-	semaphore := make(chan struct{}, *workers)
+	checkPaths := make(chan CheckPath)
 	hostErrors := make(map[string]int)
 	var mut sync.Mutex
 	seen := sync.Map{}
 
 	log.Info("Scanning started!")
 
-	for _, url := range urls {
+	for i := 0; i < *workers; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for checkPath := range checkPaths {
+				func() {
+					url := ensureScheme(checkPath.Url, *forceHTTPS)
+					host := getHostWithoutPort(checkPath.Url)
 
-		normalizedUrl := ensureScheme(url, *forceHTTPS)
+					if shouldSkipHost(host, hostErrors, &mut, *maxHostErrors) {
+						return
+					}
 
-		for _, path := range paths {
-			wg.Add(1)
-			semaphore <- struct{}{}
-			go func(url, path string) {
-				defer func() {
-					<-semaphore
-					wg.Done()
+					fullURL, err := urlJoin(url, checkPath.Path)
+					if err != nil {
+						log.Errorf("Error: %v", err)
+						return
+					}
+
+					if _, visited := seen.Load(fullURL); visited {
+						log.Warnf("URL %s has already been visited, skipping", fullURL)
+						return
+					}
+					seen.Store(fullURL, true)
+
+					log.Debugf("Probing URL: %s", fullURL)
+
+					req, err := retryablehttp.NewRequest("GET", fullURL, nil)
+					if err != nil {
+						log.Errorf("Error creating request for URL %s: %v", fullURL, err)
+						return
+					}
+
+					setRequestHeaders(req)
+
+					log.Debugf("User-Agent for %s: %s", req.URL, req.Header.Get("User-Agent"))
+
+					resp, err := client.Do(req)
+					if err != nil {
+						log.Warnf("Error probing URL %s: %v", fullURL, err)
+						incrementHostError(host, hostErrors, &mut)
+						return
+					}
+					defer resp.Body.Close()
+
+					if !isStatusAllowed(resp.StatusCode, allowedStatuses) {
+						log.Warnf("Bad status for URL %s: %d", fullURL, resp.StatusCode)
+						return
+					}
+
+					if !contentLengthFilterFunc(resp.ContentLength) {
+						log.Warnf("Content length %d for URL %s does not match the filter.", resp.ContentLength, fullURL)
+						return
+					}
+
+					mimeType := parseMimeType(resp.Header.Get("Content-Type"))
+
+					if *contentType != "" && *contentType != mimeType {
+						log.Warnf("URL %s returned content type %s, expected %s", fullURL, mimeType, *contentType)
+						return
+					}
+
+					if *notContentType != "" && *notContentType == mimeType {
+						log.Warnf("URL %s returned content type %s, which should not match %s", fullURL, mimeType, *notContentType)
+						return
+					}
+
+					body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+					if err != nil {
+						log.Errorf("Error reading response body for URL %s: %v", fullURL, err)
+						return
+					}
+
+					if *regex != "" {
+						if !matchRegex(string(body), *regex) {
+							log.Warnf("URL %s body does not match regex %s", fullURL, *regex)
+							return
+						}
+					}
+
+					if *notRegex != "" {
+						if matchRegex(string(body), *notRegex) {
+							log.Warnf("URL %s body matches not-allowed regex %s", fullURL, *notRegex)
+							return
+						}
+					}
+
+					completionDate := time.Now().Format(time.RFC3339)
+					ip := getIP(resp)
+					result := Result{
+						Input:          checkPath.Url,
+						URL:            resp.Request.URL.String(),
+						Method:         req.Method,
+						Host:           resp.Request.URL.Host,
+						Path:           resp.Request.URL.Path,
+						CompletionDate: completionDate,
+						Status:         resp.StatusCode,
+						ContentType:    mimeType,
+						ContentLength:  resp.ContentLength,
+						IP:             ip,
+					}
+
+					outputResult(writer, result, &mut)
+
+					if *saveDirectory != "" {
+						saveFile(body, resp, *saveDirectory)
+					}
 				}()
+			}
 
-				host := getHostWithoutPort(normalizedUrl)
+			log.Infof("Worker-%d finished!", id)
+		}(i)
+	}
 
-				if shouldSkipHost(host, hostErrors, &mut, *maxHostErrors) {
-					return
-				}
-
-				fullURL, err := urlJoin(normalizedUrl, path)
-				if err != nil {
-					log.Errorf("Error: %v", err)
-					return
-				}
-
-				if _, visited := seen.Load(fullURL); visited {
-					log.Warnf("URL %s has already been visited, skipping", fullURL)
-					return
-				}
-				seen.Store(fullURL, true)
-
-				log.Debugf("Probing URL: %s", fullURL)
-
-				req, err := retryablehttp.NewRequest("GET", fullURL, nil)
-				if err != nil {
-					log.Errorf("Error creating request for URL %s: %v", fullURL, err)
-					return
-				}
-
-				setRequestHeaders(req)
-
-				log.Debugf("User-Agent for %s: %s", req.URL, req.Header.Get("User-Agent"))
-
-				resp, err := client.Do(req)
-				if err != nil {
-					log.Warnf("Error probing URL %s: %v", fullURL, err)
-					incrementHostError(host, hostErrors, &mut)
-					return
-				}
-				defer resp.Body.Close()
-
-				if !isStatusAllowed(resp.StatusCode, allowedStatuses) {
-					log.Warnf("Bad status for URL %s: %d", fullURL, resp.StatusCode)
-					return
-				}
-
-				if !contentLengthFilterFunc(resp.ContentLength) {
-					log.Warnf("Content length %d for URL %s does not match the filter.", resp.ContentLength, fullURL)
-					return
-				}
-
-				mimeType := parseMimeType(resp.Header.Get("Content-Type"))
-
-				if *contentType != "" && *contentType != mimeType {
-					log.Warnf("URL %s returned content type %s, expected %s", fullURL, mimeType, *contentType)
-					return
-				}
-
-				if *notContentType != "" && *notContentType == mimeType {
-					log.Warnf("URL %s returned content type %s, which should not match %s", fullURL, mimeType, *notContentType)
-					return
-				}
-
-				body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
-				if err != nil {
-					log.Errorf("Error reading response body for URL %s: %v", fullURL, err)
-					return
-				}
-
-				if *regex != "" {
-					if !matchRegex(string(body), *regex) {
-						log.Warnf("URL %s body does not match regex %s", fullURL, *regex)
-						return
-					}
-				}
-
-				if *notRegex != "" {
-					if matchRegex(string(body), *notRegex) {
-						log.Warnf("URL %s body matches not-allowed regex %s", fullURL, *notRegex)
-						return
-					}
-				}
-
-				completionDate := time.Now().Format(time.RFC3339)
-				ip := getIP(resp)
-				result := Result{
-					Input:          url,
-					URL:            resp.Request.URL.String(),
-					Method:         req.Method,
-					Host:           resp.Request.URL.Host,
-					Path:           resp.Request.URL.Path,
-					CompletionDate: completionDate,
-					Status:         resp.StatusCode,
-					ContentType:    mimeType,
-					ContentLength:  resp.ContentLength,
-					IP:             ip,
-				}
-
-				outputResult(writer, result)
-
-				if *saveDirectory != "" {
-					saveFile(body, resp, *saveDirectory)
-				}
-			}(url, path)
+	for _, url := range urls {
+		for _, path := range paths {
+			checkPaths <- CheckPath{Url: url, Path: path}
 		}
 	}
+
+	close(checkPaths)
 
 	wg.Wait()
 
@@ -281,23 +291,17 @@ func getRequestHeaders() map[string]string {
 }
 
 func readURLs(filename string) ([]string, error) {
-	if filename == "-" {
-		return readURLsFromStdin()
+	var input *os.File = os.Stdin
+	if filename != "-" {
+		file, err := os.Open(filename)
+		if err != nil {
+			return nil, err
+		}
+		defer file.Close()
+		input = file
 	}
-	return readURLsFromFile(filename)
-}
-
-func readURLsFromFile(filename string) ([]string, error) {
-	data, err := os.ReadFile(filename)
-	if err != nil {
-		return nil, err
-	}
-	return splitLines(string(data)), nil
-}
-
-func readURLsFromStdin() ([]string, error) {
 	var urls []string
-	scanner := bufio.NewScanner(os.Stdin)
+	scanner := bufio.NewScanner(input)
 	for scanner.Scan() {
 		urls = append(urls, scanner.Text())
 	}
@@ -305,17 +309,6 @@ func readURLsFromStdin() ([]string, error) {
 		return nil, err
 	}
 	return urls, nil
-}
-
-func splitLines(data string) []string {
-	var lines []string
-	for _, line := range strings.Split(data, "\n") {
-		line = strings.TrimSpace(line)
-		if line != "" {
-			lines = append(lines, line)
-		}
-	}
-	return lines
 }
 
 func setLogLevel(logLevel string) {
@@ -686,12 +679,14 @@ func matchRegex(body, regex string) bool {
 	return matched
 }
 
-func outputResult(writer *bufio.Writer, result Result) {
+func outputResult(writer *bufio.Writer, result Result, mut *sync.Mutex) {
 	data, err := json.Marshal(result)
 	if err != nil {
 		log.Errorf("Error marshaling result: %v", err)
 		return
 	}
+	mut.Lock()
 	fmt.Fprintln(writer, string(data))
 	writer.Flush()
+	mut.Unlock()
 }
