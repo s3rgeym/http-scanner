@@ -68,7 +68,7 @@ func main() {
 
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), "Usage:\n")
-		fmt.Fprintf(flag.CommandLine.Output(), "  %s [flags] path [ path ... ]\n\n", os.Args[0])
+		fmt.Fprintf(flag.CommandLine.Output(), "  %s [ flags ] path [ path ... ]\n\n", os.Args[0])
 		fmt.Fprintf(flag.CommandLine.Output(), "Flags:\n")
 		flag.PrintDefaults()
 	}
