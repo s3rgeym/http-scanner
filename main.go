@@ -1,3 +1,5 @@
+// go mod init
+// Запусти `go mod tidy` чтобы установить все зависимости
 package main
 
 import (
@@ -20,8 +22,6 @@ import (
 	"sync"
 	"time"
 
-	// Запусти `go mod tidy` чтобы установить все зависимости
-
 	"github.com/hashicorp/go-retryablehttp"
 	"github.com/mattn/go-colorable"
 	"github.com/sirupsen/logrus"
@@ -30,27 +30,27 @@ import (
 )
 
 type Result struct {
-	Input          string `json:"input"`           // Входной URL
-	URL            string `json:"url"`             // Конечный URL (после редиректов)
-	Method         string `json:"method"`          // Метод запроса
-	Host           string `json:"host"`            // Хост
-	Path           string `json:"path"`            // Путь с query string
-	CompletionDate string `json:"completion_date"` // Дата завершения запроса
-	Status         int    `json:"status"`          // Статус ответа
-	ContentType    string `json:"content_type"`    // Content-Type ответа
-	ContentLength  int64  `json:"content_length"`  // Длина контента
-	IP             string `json:"ip"`              // IP-адрес
+	Input          string `json:"input"`
+	URL            string `json:"url"`
+	Method         string `json:"method"`
+	Host           string `json:"host"`
+	Path           string `json:"path"`
+	CompletionDate string `json:"completion_date"`
+	Status         int    `json:"status"`
+	ContentType    string `json:"content_type"`
+	ContentLength  int64  `json:"content_length"`
+	IP             string `json:"ip"`
 }
 
 var log = logrus.New()
 
 func main() {
-	inputFile := flag.String("i", "", "Input file with URLs")
-	outputFile := flag.String("o", "", "Output file for JSON results")
+	inputFile := flag.String("i", "-", "Input file with URLs")
+	outputFile := flag.String("o", "-", "Output file for JSON results")
 	logLevel := flag.String("l", "warning", "Log level (error, warning, info, debug)")
 	regex := flag.String("r", "", "Regex to check response body")
 	notRegex := flag.String("nr", "", "Regex that body should not match")
-	contentLengthFilter := flag.String("cl", "", "Filter for content length (e.g. '100', '100-200', '<100', '<=100', '>100', '>=100')")
+	contentLengthFilter := flag.String("cl", "", "Filter for content length (e.g. '100', '100-200', '< 100', '<= 100', '> 100', '>= 100')")
 	contentType := flag.String("ct", "", "Expected content type (main type and subtype only)")
 	notContentType := flag.String("nct", "", "Content type that body should not match")
 	statusCodes := flag.String("sc", "200", "Filter for status codes (e.g. '200', '200-299,400,401,403,404', '200-599')")
@@ -62,9 +62,9 @@ func main() {
 	archive := flag.Bool("a", false, "Archive and delete the save directory after completion")
 	//archivePassphrase := flag.String("passphrase", "", "Passphrase for the archive")
 	maxRetries := flag.Int("retries", 1, "Number of retry attempts")
-	rps := flag.Int("rps", 50, "Number of requests per second")
+	rps := flag.Int("rps", 50, "Maximum number of requests per second")
 	proxyURL := flag.String("proxy", "", "Proxy URL (e.g., http://example.com:8080 or socks5://localhost:1080)")
-	maxHostErrors := flag.Int("mhe", 10, "Maximum number of errors per host before ignoring further requests")
+	maxHostErrors := flag.Int("maxhe", 10, "Maximum number of errors per host before ignoring further requests")
 
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), "Usage:\n")
@@ -111,22 +111,21 @@ func main() {
 	writer := createWriter(*outputFile)
 	defer writer.Flush()
 
-	// Add rate limiter
 	limiter := rate.NewLimiter(rate.Limit(*rps), *rps)
-
-	// Configure HTTP client with proxy if specified
 	client := configureHTTPClient(*proxyURL, *timeout, *maxRetries, *followRedirects, limiter)
 
 	var wg sync.WaitGroup
 	semaphore := make(chan struct{}, *workers)
-
-	// Host error counters
 	hostErrors := make(map[string]int)
-	var hostErrorsMutex sync.Mutex
+	var mut sync.Mutex
+	seen := sync.Map{}
 
 	log.Info("Scanning started!")
 
 	for _, url := range urls {
+
+		normalizedUrl := ensureScheme(url, *forceHTTPS)
+
 		for _, path := range paths {
 			wg.Add(1)
 			semaphore <- struct{}{}
@@ -136,23 +135,23 @@ func main() {
 					wg.Done()
 				}()
 
-				normalizedUrl := ensureScheme(url, *forceHTTPS)
 				host := getHostWithoutPort(normalizedUrl)
 
-				hostErrorsMutex.Lock()
-				if hostErrors[host] >= *maxHostErrors {
-					hostErrorsMutex.Unlock()
-					log.Warnf("Host %s has exceeded the maximum number of errors, skipping further requests", host)
+				if shouldSkipHost(host, hostErrors, &mut, *maxHostErrors) {
 					return
 				}
-				hostErrorsMutex.Unlock()
 
 				fullURL, err := urlJoin(normalizedUrl, path)
-
 				if err != nil {
 					log.Errorf("Error: %v", err)
 					return
 				}
+
+				if _, visited := seen.Load(fullURL); visited {
+					log.Warnf("URL %s has already been visited, skipping", fullURL)
+					return
+				}
+				seen.Store(fullURL, true)
 
 				log.Debugf("Probing URL: %s", fullURL)
 
@@ -162,21 +161,14 @@ func main() {
 					return
 				}
 
-				for key, value := range getRequestHeaders() {
-					req.Header.Set(key, value)
-				}
+				setRequestHeaders(req)
 
-				log.Debugf("User-Agent for %s: %s", fullURL, req.Header.Get("User-Agent"))
+				log.Debugf("User-Agent for %s: %s", req.URL, req.Header.Get("User-Agent"))
 
 				resp, err := client.Do(req)
 				if err != nil {
 					log.Warnf("Error probing URL %s: %v", fullURL, err)
-
-					// Increment host error counter
-					hostErrorsMutex.Lock()
-					hostErrors[host]++
-					hostErrorsMutex.Unlock()
-
+					incrementHostError(host, hostErrors, &mut)
 					return
 				}
 				defer resp.Body.Close()
@@ -191,21 +183,16 @@ func main() {
 					return
 				}
 
-				contentTypeHeader := resp.Header.Get("Content-Type")
-				mimeType := parseMimeType(contentTypeHeader)
+				mimeType := parseMimeType(resp.Header.Get("Content-Type"))
 
-				if *contentType != "" {
-					if *contentType != mimeType {
-						log.Warnf("URL %s returned content type %s, expected %s", fullURL, mimeType, *contentType)
-						return
-					}
+				if *contentType != "" && *contentType != mimeType {
+					log.Warnf("URL %s returned content type %s, expected %s", fullURL, mimeType, *contentType)
+					return
 				}
 
-				if *notContentType != "" {
-					if *notContentType == mimeType {
-						log.Warnf("URL %s returned content type %s, which should not match %s", fullURL, mimeType, *notContentType)
-						return
-					}
+				if *notContentType != "" && *notContentType == mimeType {
+					log.Warnf("URL %s returned content type %s, which should not match %s", fullURL, mimeType, *notContentType)
+					return
 				}
 
 				body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
@@ -215,16 +202,14 @@ func main() {
 				}
 
 				if *regex != "" {
-					matched, err := regexp.MatchString(*regex, string(body))
-					if err != nil || !matched {
+					if !matchRegex(string(body), *regex) {
 						log.Warnf("URL %s body does not match regex %s", fullURL, *regex)
 						return
 					}
 				}
 
 				if *notRegex != "" {
-					matched, err := regexp.MatchString(*notRegex, string(body))
-					if err != nil || matched {
+					if matchRegex(string(body), *notRegex) {
 						log.Warnf("URL %s body matches not-allowed regex %s", fullURL, *notRegex)
 						return
 					}
@@ -245,14 +230,7 @@ func main() {
 					IP:             ip,
 				}
 
-				// Immediately output result
-				data, err := json.Marshal(result)
-				if err != nil {
-					log.Errorf("Error marshaling result: %v", err)
-					return
-				}
-				fmt.Fprintln(writer, string(data))
-				writer.Flush()
+				outputResult(writer, result)
 
 				if *saveDirectory != "" {
 					saveFile(body, resp, *saveDirectory)
@@ -270,6 +248,28 @@ func main() {
 	log.Infof("Scanning finished!")
 }
 
+func shouldSkipHost(host string, hostErrors map[string]int, mut *sync.Mutex, maxHostErrors int) bool {
+	mut.Lock()
+	defer mut.Unlock()
+	if hostErrors[host] >= maxHostErrors {
+		log.Warnf("Host %s has exceeded the maximum number of errors, skipping further requests", host)
+		return true
+	}
+	return false
+}
+
+func incrementHostError(host string, hostErrors map[string]int, mut *sync.Mutex) {
+	mut.Lock()
+	hostErrors[host]++
+	mut.Unlock()
+}
+
+func setRequestHeaders(req *retryablehttp.Request) {
+	for key, value := range getRequestHeaders() {
+		req.Header.Set(key, value)
+	}
+}
+
 func getRequestHeaders() map[string]string {
 	return map[string]string{
 		"Accept-Language": "en-US,en;q=0.9",
@@ -279,10 +279,10 @@ func getRequestHeaders() map[string]string {
 }
 
 func readURLs(filename string) ([]string, error) {
-	if filename != "" {
-		return readURLsFromFile(filename)
+	if filename == "-" {
+		return readURLsFromStdin()
 	}
-	return readURLsFromStdin()
+	return readURLsFromFile(filename)
 }
 
 func readURLsFromFile(filename string) ([]string, error) {
@@ -362,7 +362,7 @@ func randomChromeUserAgent() string {
 	return fmt.Sprintf(
 		"Mozilla/5.0 (%s) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/%d.0.0.0 Safari/537.36",
 		platforms[rand.Int()%len(platforms)],
-		randomIntInRange(88, 128),
+		randomIntInRange(80, 128),
 	)
 }
 
@@ -388,7 +388,7 @@ func getIP(resp *http.Response) string {
 }
 
 func createWriter(filename string) *bufio.Writer {
-	if filename != "" {
+	if filename != "-" {
 		file, err := os.Create(filename)
 		if err != nil {
 			log.Errorf("Error creating output file: %v", err)
@@ -459,7 +459,7 @@ func parseStatusCodes(input string) ([][2]int, error) {
 	var ranges [][2]int
 
 	if input == "" {
-		return ranges, nil // Нет фильтра, возвращаем пустой диапазон
+		return ranges, nil
 	}
 
 	parts := strings.Split(input, ",")
@@ -517,7 +517,7 @@ func configureHTTPClient(proxyURL string, timeout time.Duration, maxRetries int,
 		},
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-			Proxy:           http.ProxyURL(nil), // Initialize with nil proxy
+			Proxy:           http.ProxyURL(nil),
 		},
 		Timeout: timeout,
 	}
@@ -534,10 +534,12 @@ func configureHTTPClient(proxyURL string, timeout time.Duration, maxRetries int,
 		limiter.Wait(req.Context())
 	}
 
+	// Отключаем отладочный вывод в retryablehttp
+	client.Logger = nil
+
 	return client
 }
 
-// archiveAndDelete archives the specified directory using 7zip and deletes the directory after archiving.
 func archiveAndDelete(saveDirectory string) {
 	archivePath := strings.TrimRight(saveDirectory, "/") + ".zip"
 
@@ -603,19 +605,8 @@ func parseContentLengthFilter(filter string) (func(int64) bool, error) {
 		return func(int64) bool { return true }, nil
 	}
 
-	// Check for exact match
-	if len(filter) > 0 && filter[0] != '<' && filter[0] != '>' {
-		length, err := strconv.ParseInt(filter, 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("invalid content length filter: %s", filter)
-		}
-		return func(contentLength int64) bool {
-			return contentLength == length
-		}, nil
-	}
-
-	// Check for range or comparison
-	if strings.HasPrefix(filter, "<=") {
+	switch {
+	case strings.HasPrefix(filter, "<="):
 		value, err := strconv.ParseInt(strings.TrimSpace(filter[2:]), 10, 64)
 		if err != nil {
 			return nil, fmt.Errorf("invalid content length filter: %s", filter)
@@ -623,7 +614,7 @@ func parseContentLengthFilter(filter string) (func(int64) bool, error) {
 		return func(contentLength int64) bool {
 			return contentLength <= value
 		}, nil
-	} else if strings.HasPrefix(filter, ">=") {
+	case strings.HasPrefix(filter, ">="):
 		value, err := strconv.ParseInt(strings.TrimSpace(filter[2:]), 10, 64)
 		if err != nil {
 			return nil, fmt.Errorf("invalid content length filter: %s", filter)
@@ -631,7 +622,7 @@ func parseContentLengthFilter(filter string) (func(int64) bool, error) {
 		return func(contentLength int64) bool {
 			return contentLength >= value
 		}, nil
-	} else if strings.HasPrefix(filter, "<") {
+	case strings.HasPrefix(filter, "<"):
 		value, err := strconv.ParseInt(strings.TrimSpace(filter[1:]), 10, 64)
 		if err != nil {
 			return nil, fmt.Errorf("invalid content length filter: %s", filter)
@@ -639,7 +630,7 @@ func parseContentLengthFilter(filter string) (func(int64) bool, error) {
 		return func(contentLength int64) bool {
 			return contentLength < value
 		}, nil
-	} else if strings.HasPrefix(filter, ">") {
+	case strings.HasPrefix(filter, ">"):
 		value, err := strconv.ParseInt(strings.TrimSpace(filter[1:]), 10, 64)
 		if err != nil {
 			return nil, fmt.Errorf("invalid content length filter: %s", filter)
@@ -647,7 +638,7 @@ func parseContentLengthFilter(filter string) (func(int64) bool, error) {
 		return func(contentLength int64) bool {
 			return contentLength > value
 		}, nil
-	} else if strings.Contains(filter, "-") {
+	case strings.Contains(filter, "-"):
 		parts := strings.Split(filter, "-")
 		if len(parts) != 2 {
 			return nil, fmt.Errorf("invalid content length filter: %s", filter)
@@ -665,7 +656,13 @@ func parseContentLengthFilter(filter string) (func(int64) bool, error) {
 		}, nil
 	}
 
-	return nil, fmt.Errorf("invalid content length filter: %s", filter)
+	length, err := strconv.ParseInt(filter, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid content length filter: %s", filter)
+	}
+	return func(contentLength int64) bool {
+		return contentLength == length
+	}, nil
 }
 
 func getHostWithoutPort(urlString string) string {
@@ -678,4 +675,21 @@ func getHostWithoutPort(urlString string) string {
 		return u.Host
 	}
 	return host
+}
+func matchRegex(body, regex string) bool {
+	matched, err := regexp.MatchString(regex, body)
+	if err != nil {
+		return false
+	}
+	return matched
+}
+
+func outputResult(writer *bufio.Writer, result Result) {
+	data, err := json.Marshal(result)
+	if err != nil {
+		log.Errorf("Error marshaling result: %v", err)
+		return
+	}
+	fmt.Fprintln(writer, string(data))
+	writer.Flush()
 }
