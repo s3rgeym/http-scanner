@@ -125,12 +125,14 @@ func main() {
 	var mut sync.Mutex
 	seen := sync.Map{}
 
-	log.Info("Scanning started!")
+	log.Info("Scanning started.")
 
 	for i := 0; i < *workers; i++ {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
+			log.Infof("Worker #%d started.", id)
+
 			for checkPath := range checkPaths {
 				func() {
 					url := ensureScheme(checkPath.Url, *forceHTTPS)
@@ -162,7 +164,7 @@ func main() {
 
 					setRequestHeaders(req)
 
-					log.Debugf("User-Agent for %s: %s", req.URL, req.Header.Get("User-Agent"))
+					log.Debugf("User-Agent for URL %s: %s", req.URL, req.Header.Get("User-Agent"))
 
 					resp, err := client.Do(req)
 					if err != nil {
@@ -237,12 +239,13 @@ func main() {
 				}()
 			}
 
-			log.Infof("Worker-%d finished!", id)
+			log.Infof("Worker #%d finished!", id)
 		}(i)
 	}
 
 	for _, url := range urls {
 		for _, path := range paths {
+
 			checkPaths <- CheckPath{Url: url, Path: path}
 		}
 	}
@@ -275,18 +278,18 @@ func incrementHostError(host string, hostErrors map[string]int, mut *sync.Mutex)
 }
 
 func setRequestHeaders(req *retryablehttp.Request) {
-	for key, value := range getRequestHeaders() {
-		req.Header.Set(key, value)
-	}
-}
-
-func getRequestHeaders() map[string]string {
-	return map[string]string{
+	headeres := map[string]string{
 		"Accept-Language": "en-US,en;q=0.9",
 		"Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+		"Referer":         "https://www.google.com/",
 		"User-Agent":      randomChromeUserAgent(),
+		//"Upgrade-Insecure-Requests": "1",
 		// TODO: подумать можно ли его применять, или клауд и прочие с ним автоматически банят?
-		// "X-Forwarded-For": "127.0.0.1",
+		//"X-Forwarded-For": "127.0.0.1",
+	}
+
+	for key, value := range headeres {
+		req.Header.Set(key, value)
 	}
 }
 
