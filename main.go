@@ -4,6 +4,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"flag"
@@ -59,17 +60,19 @@ func main() {
 	contentType := flag.String("ct", "", "Expected content type (main type and subtype only)")
 	notContentType := flag.String("nct", "", "Content type that body should not match")
 	statusCodes := flag.String("sc", "200", "Filter for status codes (e.g. '200', '200-299,400,401,403,404', '200-599')")
-	workers := flag.Int("w", 10, "Number of parallel workers")
+	workers := flag.Int("w", 20, "Number of parallel workers")
 	followRedirects := flag.Bool("F", false, "Follow redirects")
 	forceHTTPS := flag.Bool("https", false, "Force HTTPS")
-	timeout := flag.Duration("t", 15*time.Second, "HTTP request timeout")
+	connectionTimeout := flag.Duration("connection-timeout", 10*time.Second, "Timeout for establishing a connection")
+	readHeaderTimeout := flag.Duration("read-header-timeout", 5*time.Second, "Timeout for reading response headers")
+	totalTimeout := flag.Duration("t", 90*time.Second, "Total timeout for the entire request")
 	saveDirectory := flag.String("S", "", "Save files to directory")
 	archive := flag.Bool("a", false, "Archive and delete the save directory after completion")
 	//archivePassphrase := flag.String("passphrase", "", "Passphrase for the archive")
 	maxRetries := flag.Int("retries", 1, "Number of retry attempts")
 	rps := flag.Int("rps", 50, "Maximum number of requests per second")
 	proxyURL := flag.String("proxy", "", "Proxy URL (e.g., http://example.com:8080 or socks5://localhost:1080)")
-	maxHostErrors := flag.Int("maxhe", 10, "Maximum number of errors per host before ignoring further requests")
+	maxHostErrors := flag.Int("maxhe", 30, "Maximum number of errors per host before ignoring further requests")
 
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), "Usage:\n")
@@ -117,7 +120,7 @@ func main() {
 	defer writer.Flush()
 
 	limiter := rate.NewLimiter(rate.Limit(*rps), *rps)
-	client := configureHTTPClient(*proxyURL, *timeout, *maxRetries, *followRedirects, limiter)
+	client := configureHTTPClient(*proxyURL, *connectionTimeout, *readHeaderTimeout, *maxRetries, *followRedirects, limiter)
 
 	var wg sync.WaitGroup
 	checkPaths := make(chan CheckPath)
@@ -165,6 +168,11 @@ func main() {
 					setRequestHeaders(req)
 
 					log.Debugf("User-Agent for URL %s: %s", req.URL, req.Header.Get("User-Agent"))
+
+					ctx, cancel := context.WithTimeout(req.Context(), *totalTimeout) // Максимальное время на выполнение запроса
+					defer cancel()
+
+					req = req.WithContext(ctx)
 
 					resp, err := client.Do(req)
 					if err != nil {
@@ -216,6 +224,10 @@ func main() {
 						}
 					}
 
+					if *saveDirectory != "" {
+						saveFile(body, resp, *saveDirectory)
+					}
+
 					completionDate := time.Now().Format(time.RFC3339)
 					ip := getIP(resp)
 					result := Result{
@@ -232,10 +244,6 @@ func main() {
 					}
 
 					outputResult(writer, result, &mut)
-
-					if *saveDirectory != "" {
-						saveFile(body, resp, *saveDirectory)
-					}
 				}()
 			}
 
@@ -503,7 +511,7 @@ func isStatusAllowed(status int, ranges [][2]int) bool {
 	return false
 }
 
-func configureHTTPClient(proxyURL string, timeout time.Duration, maxRetries int, followRedirects bool, limiter *rate.Limiter) *retryablehttp.Client {
+func configureHTTPClient(proxyURL string, connectionTimeout time.Duration, readHeaderTimeout time.Duration, maxRetries int, followRedirects bool, limiter *rate.Limiter) *retryablehttp.Client {
 	client := retryablehttp.NewClient()
 	client.RetryMax = maxRetries
 	client.HTTPClient = &http.Client{
@@ -516,8 +524,13 @@ func configureHTTPClient(proxyURL string, timeout time.Duration, maxRetries int,
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 			Proxy:           http.ProxyURL(nil),
+			DialContext: (&net.Dialer{
+				Timeout: connectionTimeout, // Таймаут на установление соединения
+			}).DialContext,
+			ResponseHeaderTimeout: readHeaderTimeout, // Таймаут на получение заголовков
 		},
-		Timeout: timeout,
+		// Если установить таймаут, то клиент может зависнуть, встретив какой-то неправильный ответ
+		//Timeout: timeout,
 	}
 
 	if proxyURL != "" {
