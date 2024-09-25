@@ -15,13 +15,10 @@ Ready-to-use builds for Linux, Mac OS, and Windows can be downloaded from the [r
 Example Usage:
 
 ```bash
-$ echo 'example.com' | http-scanner -nct 'text/html' -nr '(?i)<html' -cl '>0' -S dumps -a -l debug /{archive,site,backup}.{zip,tar.{g,x}z}
-...
-{"input":"example.com","url":"https://example.com/backup.tar.gz","method":"GET","host":"example.com","path":"/backup.tar.gz","completion_date":"2024-09-23T15:31:08+03:00","status":200,"content_type":"application/octet-stream","content_length":1517,"ip":"120.34.56.78"}
-INFO[2024-09-23T15:31:08+03:00] File saved: dumps/example.com/backup.tar.gz
-...
-INFO[2024-09-23T15:31:09+03:00] Scanning finished!
+echo 'example.com' | http-scanner -nct 'text/html' -nr '(?i)<html' -cl '>0' -S dumps -a -l debug /{archive,site,backup}.{zip,tar.{g,x}z}
 ```
+
+- `echo 'example.com' |`: Passes the string example.com to the standard input of the http-scanner utility.
 
 - `-nct 'text/html'`: Filters out responses with the content type `text/html`, ignoring responses that have `Content-Type: text/html`.
 
@@ -34,6 +31,16 @@ INFO[2024-09-23T15:31:09+03:00] Scanning finished!
 - `-a`: Archives and deletes the save directory after completion, creating a ZIP archive of the `dumps` directory and deleting the directory.
 
 - `-l debug`: Sets the log level to debug, enabling detailed logging for debugging purposes.
+
+- `/{archive,site,backup}.{zip,tar.{g,x}z}`: this expression will be transformed by the shell into a list of paths to check.
+
+The results are output in JSONL format, where each JSON document is placed on a new line.
+
+Example of JSONL Output:
+
+```json
+{"input":"example.com","url":"https://example.com/backup.tar.gz","method":"GET","host":"example.com","path":"/backup.tar.gz","completion_date":"2024-09-23T15:31:08+03:00","status":200,"content_type":"application/octet-stream","content_length":1517,"ip":"120.34.56.78"}
+```
 
 See help:
 
