@@ -365,7 +365,7 @@ func randomChromeUserAgent() string {
 	return fmt.Sprintf(
 		"Mozilla/5.0 (%s) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/%d.0.0.0 Safari/537.36",
 		platforms[rand.Int()%len(platforms)],
-		randomIntInRange(80, 128),
+		randomIntInRange(80, 129),
 	)
 }
 
