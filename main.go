@@ -1,5 +1,3 @@
-// go mod init
-// Запусти `go mod tidy` чтобы установить все зависимости
 package main
 
 import (
@@ -27,6 +25,7 @@ import (
 	"github.com/mattn/go-colorable"
 	"github.com/sirupsen/logrus"
 	"github.com/yeka/zip"
+	"golang.org/x/net/idna"
 	"golang.org/x/time/rate"
 )
 
@@ -68,7 +67,6 @@ func main() {
 	totalTimeout := flag.Duration("t", 90*time.Second, "Total timeout for the entire request")
 	saveDirectory := flag.String("S", "", "Save files to directory")
 	archive := flag.Bool("a", false, "Archive and delete the save directory after completion")
-	//archivePassphrase := flag.String("passphrase", "", "Passphrase for the archive")
 	maxRetries := flag.Int("retries", 1, "Number of retry attempts")
 	rps := flag.Int("rps", 50, "Maximum number of requests per second")
 	proxyURL := flag.String("proxy", "", "Proxy URL (e.g., http://example.com:8080 or socks5://localhost:1080)")
@@ -95,16 +93,13 @@ func main() {
 		ForceColors:    true,
 		FullTimestamp:  true,
 		DisableSorting: true,
-		// DisableLevelTruncation: true,
 	})
 	setLogLevel(*logLevel)
 
-	urls, err := readURLs(*inputFile)
+	urls, err := readURLs(*inputFile, *forceHTTPS)
 	if err != nil {
 		log.Fatalf("Error reading URLs: %v", err)
 	}
-
-	//log.Debugf("Expanded path: %v", paths)
 
 	allowedStatuses, err := parseStatusCodes(*statusCodes)
 	if err != nil {
@@ -138,8 +133,8 @@ func main() {
 
 			for checkPath := range checkPaths {
 				func() {
-					url := ensureScheme(checkPath.Url, *forceHTTPS)
-					host := getHostWithoutPort(checkPath.Url)
+					url := checkPath.Url
+					host := getHostWithoutPort(url)
 
 					if shouldSkipHost(host, hostErrors, &mut, *maxHostErrors) {
 						return
@@ -253,7 +248,6 @@ func main() {
 
 	for _, url := range urls {
 		for _, path := range paths {
-
 			checkPaths <- CheckPath{Url: url, Path: path}
 		}
 	}
@@ -286,22 +280,19 @@ func incrementHostError(host string, hostErrors map[string]int, mut *sync.Mutex)
 }
 
 func setRequestHeaders(req *retryablehttp.Request) {
-	headeres := map[string]string{
+	headers := map[string]string{
 		"Accept-Language": "en-US,en;q=0.9",
 		"Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
 		"Referer":         "https://www.google.com/",
 		"User-Agent":      randomChromeUserAgent(),
-		//"Upgrade-Insecure-Requests": "1",
-		// TODO: подумать можно ли его применять, или клауд и прочие с ним автоматически банят?
-		//"X-Forwarded-For": "127.0.0.1",
 	}
 
-	for key, value := range headeres {
+	for key, value := range headers {
 		req.Header.Set(key, value)
 	}
 }
 
-func readURLs(filename string) ([]string, error) {
+func readURLs(filename string, forceHTTPS bool) ([]string, error) {
 	var input *os.File = os.Stdin
 	if filename != "-" {
 		file, err := os.Open(filename)
@@ -314,7 +305,13 @@ func readURLs(filename string) ([]string, error) {
 	var urls []string
 	scanner := bufio.NewScanner(input)
 	for scanner.Scan() {
-		urls = append(urls, scanner.Text())
+		url := scanner.Text()
+		normalizedURL, err := normalizeURL(url, forceHTTPS)
+		if err != nil {
+			log.Warnf("Error normalizing URL %s: %v", url, err)
+			continue
+		}
+		urls = append(urls, normalizedURL)
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, err
@@ -370,15 +367,6 @@ func randomChromeUserAgent() string {
 		platforms[rand.Int()%len(platforms)],
 		randomIntInRange(80, 128),
 	)
-}
-
-func ensureScheme(url string, forceHTTPS bool) string {
-	if !strings.Contains(url, "://") {
-		url = "https://" + url
-	} else if forceHTTPS && strings.HasPrefix(url, "http://") {
-		url = "https://" + url[7:]
-	}
-	return url
 }
 
 func getIP(resp *http.Response) string {
@@ -529,8 +517,6 @@ func configureHTTPClient(proxyURL string, connectionTimeout time.Duration, readH
 			}).DialContext,
 			ResponseHeaderTimeout: readHeaderTimeout, // Таймаут на получение заголовков
 		},
-		// Если установить таймаут, то клиент может зависнуть, встретив какой-то неправильный ответ
-		//Timeout: timeout,
 	}
 
 	if proxyURL != "" {
@@ -687,6 +673,7 @@ func getHostWithoutPort(urlString string) string {
 	}
 	return host
 }
+
 func matchRegex(body, regex string) bool {
 	matched, err := regexp.MatchString(regex, body)
 	if err != nil {
@@ -705,4 +692,29 @@ func outputResult(writer *bufio.Writer, result Result, mut *sync.Mutex) {
 	fmt.Fprintln(writer, string(data))
 	writer.Flush()
 	mut.Unlock()
+}
+
+func normalizeURL(urlString string, forceHTTPS bool) (string, error) {
+	u, err := url.Parse(urlString)
+	if err != nil {
+		return "", err
+	}
+
+	if u.Scheme == "" {
+		u.Scheme = "http"
+	}
+
+	if forceHTTPS && u.Scheme == "http" {
+		u.Scheme = "https"
+	}
+
+	if u.Host != "" {
+		punycodeHost, err := idna.ToASCII(u.Host)
+		if err != nil {
+			return "", err
+		}
+		u.Host = punycodeHost
+	}
+
+	return u.String(), nil
 }
