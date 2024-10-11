@@ -7,6 +7,7 @@ require (
 	github.com/mattn/go-colorable v0.1.13
 	github.com/sirupsen/logrus v1.9.3
 	github.com/yeka/zip v0.0.0-20231116150916-03d6312748a9
+	golang.org/x/net v0.0.0-20190404232315-eb5bcb51f2a3
 	golang.org/x/time v0.6.0
 )
 
@@ -16,4 +17,5 @@ require (
 	github.com/stretchr/testify v1.9.0 // indirect
 	golang.org/x/crypto v0.0.0-20191011191535-87dc89f01550 // indirect
 	golang.org/x/sys v0.20.0 // indirect
+	golang.org/x/text v0.3.0 // indirect
 )
