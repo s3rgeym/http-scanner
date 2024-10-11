@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -123,13 +122,13 @@ func main() {
 	var mut sync.Mutex
 	seen := sync.Map{}
 
-	log.Info("Scanning started.")
+	log.Debug("Scanning started.")
 
 	for i := 0; i < *workers; i++ {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			log.Infof("Worker #%d started.", id)
+			log.Debugf("Worker #%d started.", id)
 
 			for checkPath := range checkPaths {
 				func() {
@@ -242,7 +241,7 @@ func main() {
 				}()
 			}
 
-			log.Infof("Worker #%d finished!", id)
+			log.Debugf("Worker #%d finished!", id)
 		}(i)
 	}
 
@@ -260,7 +259,7 @@ func main() {
 		archiveAndDelete(*saveDirectory)
 	}
 
-	log.Infof("Scanning finished!")
+	log.Debug("Scanning finished!")
 }
 
 func shouldSkipHost(host string, hostErrors map[string]int, mut *sync.Mutex, maxHostErrors int) bool {
@@ -392,18 +391,20 @@ func createWriter(filename string) *bufio.Writer {
 	return bufio.NewWriter(os.Stdout)
 }
 
-func urlJoin(baseURL, relativePath string) (string, error) {
+func urlJoin(baseURL string, paths ...string) (string, error) {
 	base, err := url.Parse(baseURL)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("error parsing base URL: %w", err)
 	}
-	relative, err := url.Parse(relativePath)
-	if err != nil {
-		return "", err
+	for _, path := range paths {
+		additional, err := url.Parse(path)
+		if err != nil {
+			return "", fmt.Errorf("error parsing additional path: %w", err)
+		}
+		base = base.ResolveReference(additional)
 	}
-	joined := base.ResolveReference(relative)
-	joined.Path = path.Join(base.Path, relative.Path)
-	return joined.String(), nil
+
+	return base.String(), nil
 }
 
 func saveFile(initialBody []byte, resp *http.Response, saveDirectory string) {
@@ -538,6 +539,12 @@ func configureHTTPClient(proxyURL string, connectionTimeout time.Duration, readH
 }
 
 func archiveAndDelete(saveDirectory string) {
+	// Проверка существования каталога
+	if _, err := os.Stat(saveDirectory); os.IsNotExist(err) {
+		log.Warnf("Save directory %s does not exist, skipping archiving and deletion", saveDirectory)
+		return
+	}
+
 	archivePath := strings.TrimRight(saveDirectory, "/") + ".zip"
 
 	// Create a new ZIP archive with the specified passphrase
