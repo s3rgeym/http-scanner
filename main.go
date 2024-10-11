@@ -68,7 +68,7 @@ func main() {
 	saveDirectory := flag.String("S", "", "Save files to directory")
 	archive := flag.Bool("a", false, "Archive and delete the save directory after completion")
 	maxRetries := flag.Int("retries", 1, "Number of retry attempts")
-	rps := flag.Int("rps", 50, "Maximum number of requests per second")
+	rps := flag.Int("rps", 150, "Maximum number of requests per second")
 	proxyURL := flag.String("proxy", "", "Proxy URL (e.g., http://example.com:8080 or socks5://localhost:1080)")
 	maxHostErrors := flag.Int("maxhe", 30, "Maximum number of errors per host before ignoring further requests")
 
